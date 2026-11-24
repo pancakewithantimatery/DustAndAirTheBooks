@@ -1,0 +1,6 @@
+{
+  "name": "TomeScanner",
+  "description": "Minimalist personal home library cataloger and gamified knowledge-base companion for scanning physical books via ISBN-10 and ISBN-13.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
