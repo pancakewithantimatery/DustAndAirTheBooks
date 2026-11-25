@@ -20,6 +20,7 @@ import com.example.domain.AiModelOption
 import com.example.domain.ArchivistProgress
 import com.example.domain.ArchivistRankEngine
 import com.example.domain.BookRecord
+import com.example.domain.DiscoveredGeminiModel
 import com.example.domain.GroundingSource
 import com.example.domain.IsbnUtils
 import com.example.domain.ParsedIsbn
@@ -30,6 +31,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -48,6 +51,13 @@ sealed interface LookupUiState {
     data object Idle : LookupUiState
     data class Loading(val title: String, val subtitle: String) : LookupUiState
     data class Error(val message: String, val lastQuery: String? = null) : LookupUiState
+}
+
+sealed interface ModelDiscoveryState {
+    data object Idle : ModelDiscoveryState
+    data object Loading : ModelDiscoveryState
+    data class Loaded(val models: List<DiscoveredGeminiModel>) : ModelDiscoveryState
+    data class Error(val message: String) : ModelDiscoveryState
 }
 
 data class BookDraft(
@@ -134,6 +144,8 @@ data class TomeUiState(
     val filteredBooks: List<BookRecord> = emptyList(),
     val archivistProgress: ArchivistProgress = ArchivistRankEngine.calculate(0, 0),
     val settings: AppSettings = AppSettings(),
+    val modelDiscoveryState: ModelDiscoveryState = ModelDiscoveryState.Idle,
+    val alternateModelSuggestion: String = AiModelOption.LITE_BATCH.modelId,
     val manualIsbnInput: String = "",
     val parsedManualIsbn: ParsedIsbn = IsbnUtils.parseSingle(""),
     val scannerActive: Boolean = false,
@@ -150,6 +162,7 @@ private data class TransientScanState(
     val manualIsbnInput: String = "",
     val scannerActive: Boolean = false,
     val lookupState: LookupUiState = LookupUiState.Idle,
+    val modelDiscoveryState: ModelDiscoveryState = ModelDiscoveryState.Idle,
     val reviewDraft: BookDraft? = null,
     val duplicatePrompt: DuplicateBookPrompt? = null,
     val searchQuery: String = "",
@@ -199,12 +212,20 @@ class TomeViewModel(application: Application) : AndroidViewModel(application) {
             haystack.contains(query)
         }
 
+        val alternateModel = resolveAlternateModel(
+            currentModelId = settings.effectiveModelId,
+            isUsingPaidKey = settings.isUsingPaidKey,
+            discoveryState = transient.modelDiscoveryState
+        )
+
         TomeUiState(
             activeTab = transient.activeTab,
             books = books,
             filteredBooks = filtered,
             archivistProgress = progress,
             settings = settings,
+            modelDiscoveryState = transient.modelDiscoveryState,
+            alternateModelSuggestion = alternateModel,
             manualIsbnInput = transient.manualIsbnInput,
             parsedManualIsbn = IsbnUtils.parseSingle(transient.manualIsbnInput),
             scannerActive = transient.scannerActive,
@@ -220,6 +241,96 @@ class TomeViewModel(application: Application) : AndroidViewModel(application) {
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = TomeUiState()
     )
+
+    init {
+        viewModelScope.launch {
+            settingsRepository.settings
+                .map { Triple(it.isUsingPaidKey, it.customApiKey, it.effectiveModelId) }
+                .distinctUntilChanged { old, new -> old.first == new.first && old.second == new.second }
+                .collect { (usingPaidKey, apiKey, currentModelId) ->
+                    if (usingPaidKey && apiKey.isNotBlank()) {
+                        discoverModelsForKey(apiKey = apiKey, currentModelId = currentModelId, autoSelectIfMissing = true)
+                    } else {
+                        transientState.update { it.copy(modelDiscoveryState = ModelDiscoveryState.Idle) }
+                    }
+                }
+        }
+    }
+
+    private fun resolveAlternateModel(
+        currentModelId: String,
+        isUsingPaidKey: Boolean,
+        discoveryState: ModelDiscoveryState
+    ): String {
+        if (isUsingPaidKey && discoveryState is ModelDiscoveryState.Loaded) {
+            val discoveredAlt = discoveryState.models.firstOrNull {
+                !it.id.equals(currentModelId, ignoreCase = true)
+            }
+            if (discoveredAlt != null) return discoveredAlt.id
+        }
+        return if (currentModelId.equals(AiModelOption.FAST_FLASH.modelId, ignoreCase = true)) {
+            AiModelOption.LITE_BATCH.modelId
+        } else {
+            AiModelOption.FAST_FLASH.modelId
+        }
+    }
+
+    fun refreshAvailableModels() {
+        val currentSettings = uiState.value.settings
+        if (!currentSettings.isUsingPaidKey) {
+            showSnackbar("Add and enable a Paid API key to query models.list.")
+            return
+        }
+        viewModelScope.launch {
+            discoverModelsForKey(
+                apiKey = currentSettings.customApiKey,
+                currentModelId = currentSettings.effectiveModelId,
+                autoSelectIfMissing = true
+            )
+        }
+    }
+
+    private suspend fun discoverModelsForKey(
+        apiKey: String,
+        currentModelId: String,
+        autoSelectIfMissing: Boolean
+    ) {
+        transientState.update { it.copy(modelDiscoveryState = ModelDiscoveryState.Loading) }
+        try {
+            val models = aiRepository.fetchAvailableModels(apiKey)
+            transientState.update { it.copy(modelDiscoveryState = ModelDiscoveryState.Loaded(models)) }
+
+            if (autoSelectIfMissing && models.isNotEmpty()) {
+                val currentSupported = models.any { it.id.equals(currentModelId, ignoreCase = true) }
+                if (!currentSupported) {
+                    val bestModel = models.first().id
+                    applyModelId(bestModel)
+                    showSnackbar("Verified via models.list — auto-selected $bestModel")
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "models.list discovery failed", e)
+            transientState.update {
+                it.copy(
+                    modelDiscoveryState = ModelDiscoveryState.Error(
+                        e.localizedMessage ?: "Failed to query models.list."
+                    )
+                )
+            }
+        }
+    }
+
+    private suspend fun applyModelId(modelId: String) {
+        val preset = AiModelOption.presetMatchingId(modelId)
+        if (preset != null) {
+            settingsRepository.setModel(preset)
+        } else {
+            settingsRepository.setCustomModelId(modelId)
+            settingsRepository.setModel(AiModelOption.CUSTOM)
+        }
+    }
 
     fun selectTab(tab: TomeTab) {
         transientState.update {
@@ -622,26 +733,38 @@ class TomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun switchToFlashAndRetry() {
+    fun selectDiscoveredModel(modelId: String) {
+        val trimmed = modelId.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            applyModelId(trimmed)
+            showSnackbar("Model switched to $trimmed")
+        }
+    }
+
+    fun switchToAlternateModelAndRetry() {
+        val state = uiState.value
+        val targetModelId = state.alternateModelSuggestion
         val lastQuery = (transientState.value.lookupState as? LookupUiState.Error)?.lastQuery
             ?: transientState.value.manualIsbnInput
         viewModelScope.launch {
-            settingsRepository.setModel(AiModelOption.FAST_FLASH)
+            applyModelId(targetModelId)
             if (lastQuery.isNotBlank()) {
-                val settings = uiState.value.settings.copy(selectedModel = AiModelOption.FAST_FLASH)
+                val settings = uiState.value.settings
                 val paidKey = if (settings.isUsingPaidKey) settings.customApiKey else null
+                val backendTag = if (paidKey != null) "Paid API Key" else "Firebase AI Logic"
                 transientState.update {
                     it.copy(
                         lookupState = LookupUiState.Loading(
-                            title = "Retrying with gemini-3.8-flash…",
-                            subtitle = "Google Search Grounding"
+                            title = "Retrying with $targetModelId…",
+                            subtitle = "$backendTag · Google Search Grounding"
                         )
                     )
                 }
                 try {
                     val result = aiRepository.lookupByIsbnOrQuery(
                         query = lastQuery,
-                        modelId = AiModelOption.FAST_FLASH.modelId,
+                        modelId = targetModelId,
                         defaultGroup = settings.defaultGroup,
                         customApiKey = paidKey
                     )
@@ -653,13 +776,13 @@ class TomeViewModel(application: Application) : AndroidViewModel(application) {
                                 sources = result.sources,
                                 isEdit = false
                             ),
-                            snackbarMessage = "Switched to gemini-3.8-flash. Record ready."
+                            snackbarMessage = "Switched to $targetModelId. Record ready."
                         )
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.e(TAG, "Flash retry failed", e)
+                    Log.e(TAG, "Alternate model retry failed", e)
                     openManualFallbackIfValidIsbn(
                         query = lastQuery,
                         defaultGroup = settings.defaultGroup,

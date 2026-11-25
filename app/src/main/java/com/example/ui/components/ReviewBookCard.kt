@@ -145,7 +145,7 @@ fun ReviewBookCard(
                 )
             }
 
-            // Section 2: Published
+            // Section 2: Published (Publisher + Year only)
             FormSectionContainer(title = stringResource(R.string.section_published)) {
                 TomeTextField(
                     value = draft.publisher,
@@ -154,50 +154,23 @@ fun ReviewBookCard(
                     placeholder = "Publisher (City)",
                     modifier = Modifier.testTag("field_publisher")
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    TomeTextField(
-                        value = draft.publishYear,
-                        onValueChange = { value ->
-                            onDraftChange { it.copy(publishYear = value.filter { c -> c.isDigit() }.take(4)) }
-                        },
-                        label = "Year",
-                        placeholder = "YYYY",
-                        keyboardType = KeyboardType.Number,
-                        monospace = true,
-                        modifier = Modifier
-                            .weight(1.4f)
-                            .testTag("field_year")
-                    )
-                    TomeTextField(
-                        value = draft.publishMonth,
-                        onValueChange = { value ->
-                            onDraftChange { it.copy(publishMonth = value.filter { c -> c.isDigit() }.take(2)) }
-                        },
-                        label = "Month",
-                        placeholder = "MM",
-                        keyboardType = KeyboardType.Number,
-                        monospace = true,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("field_month")
-                    )
-                    TomeTextField(
-                        value = draft.publishDay,
-                        onValueChange = { value ->
-                            onDraftChange { it.copy(publishDay = value.filter { c -> c.isDigit() }.take(2)) }
-                        },
-                        label = "Day",
-                        placeholder = "DD",
-                        keyboardType = KeyboardType.Number,
-                        monospace = true,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("field_day")
-                    )
-                }
+                TomeTextField(
+                    value = draft.publishYear,
+                    onValueChange = { value ->
+                        onDraftChange {
+                            it.copy(
+                                publishYear = value.filter { c -> c.isDigit() }.take(4),
+                                publishMonth = "",
+                                publishDay = ""
+                            )
+                        }
+                    },
+                    label = "Year",
+                    placeholder = "YYYY",
+                    keyboardType = KeyboardType.Number,
+                    monospace = true,
+                    modifier = Modifier.testTag("field_year")
+                )
             }
 
             // Section 3: Identifiers (Auto-Synced ISBN-13 <-> ISBN-10)

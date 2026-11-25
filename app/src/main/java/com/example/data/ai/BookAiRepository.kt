@@ -5,6 +5,7 @@ import android.util.Base64
 import android.util.Log
 import com.example.domain.BookLookupResult
 import com.example.domain.BookRecord
+import com.example.domain.DiscoveredGeminiModel
 import com.example.domain.GroundingSource
 import com.example.domain.IsbnUtils
 import com.google.firebase.Firebase
@@ -176,6 +177,97 @@ class BookAiRepository {
         )
         BookLookupResult(record = record, sources = sources)
     }
+
+    /**
+     * Dynamically queries Gemini `models.list` for the user's API key so TomeScanner
+     * knows which generateContent models are actually available and can auto-select
+     * or highlight working models.
+     */
+    suspend fun fetchAvailableModels(apiKey: String): List<DiscoveredGeminiModel> =
+        withContext(Dispatchers.IO) {
+            val trimmedKey = apiKey.trim()
+            if (trimmedKey.isEmpty()) return@withContext emptyList()
+
+            withTimeout(25_000L) {
+                val endpoint = URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100")
+                val connection = (endpoint.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = HTTP_CONNECT_TIMEOUT_MS
+                    readTimeout = 20_000
+                    setRequestProperty("x-goog-api-key", trimmedKey)
+                }
+                try {
+                    val statusCode = connection.responseCode
+                    val responseText = (if (statusCode in 200..299) {
+                        connection.inputStream
+                    } else {
+                        connection.errorStream
+                    })?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+
+                    if (statusCode !in 200..299) {
+                        val parsedError = try {
+                            JSONObject(responseText).optJSONObject("error")?.optString("message")
+                        } catch (_: Exception) {
+                            null
+                        }
+                        throw IllegalStateException(
+                            parsedError?.takeIf { it.isNotBlank() }
+                                ?: "Unable to verify models ($statusCode). Check your API key."
+                        )
+                    }
+
+                    val root = JSONObject(responseText)
+                    val arr = root.optJSONArray("models") ?: return@withTimeout emptyList()
+                    val excludedTokens = listOf(
+                        "embedding", "imagen", "veo", "tts", "aqa", "bison", "gecko",
+                        "learnlm", "robotics", "computer-use", "image-generation", "-image",
+                        "native-audio"
+                    )
+
+                    buildList {
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.optJSONObject(i) ?: continue
+                            val rawName = obj.optString("name", "").trim()
+                            val cleanId = rawName.removePrefix("models/")
+                            if (!cleanId.startsWith("gemini-", ignoreCase = true)) continue
+                            if (excludedTokens.any { cleanId.contains(it, ignoreCase = true) }) continue
+
+                            val methods = obj.optJSONArray("supportedGenerationMethods")
+                            var supportsGenerate = false
+                            if (methods != null) {
+                                for (m in 0 until methods.length()) {
+                                    if (methods.optString(m) == "generateContent") {
+                                        supportsGenerate = true
+                                        break
+                                    }
+                                }
+                            }
+                            if (!supportsGenerate) continue
+
+                            val displayName = obj.optString("displayName", cleanId).trim().ifEmpty { cleanId }
+                            val description = obj.optString("description", "").trim()
+                            add(
+                                DiscoveredGeminiModel(
+                                    id = cleanId,
+                                    displayName = displayName,
+                                    description = description
+                                )
+                            )
+                        }
+                    }.sortedWith(
+                        compareByDescending<DiscoveredGeminiModel> {
+                            it.id.contains("flash", ignoreCase = true) && !it.id.contains("lite", ignoreCase = true)
+                        }.thenByDescending {
+                            it.id.contains("flash-lite", ignoreCase = true)
+                        }.thenByDescending {
+                            it.id
+                        }
+                    )
+                } finally {
+                    connection.disconnect()
+                }
+            }
+        }
 
     /**
      * Direct Gemini REST API call used ONLY when the user explicitly provides

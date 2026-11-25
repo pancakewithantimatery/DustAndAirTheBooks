@@ -84,7 +84,7 @@ fun ScanScreen(
     onOpenBlankDraft: () -> Unit,
     onDismissError: () -> Unit,
     onOpenSettingsForKey: () -> Unit,
-    onSwitchToFlashAndRetry: () -> Unit,
+    onSwitchToAlternateAndRetry: () -> Unit,
     onDraftChange: ((BookDraft) -> BookDraft) -> Unit,
     onDraftIsbn13Change: (String) -> Unit,
     onDraftIsbn10Change: (String) -> Unit,
@@ -480,8 +480,15 @@ fun ScanScreen(
                         }
 
                         if (isQuotaError) {
+                            val currentId = uiState.settings.effectiveModelId
+                            val altId = uiState.alternateModelSuggestion
+                            val quotaHint = if (uiState.settings.isUsingPaidKey) {
+                                "Quota limit reached for $currentId on your current API key. Try $altId or verify your key & available models in Settings."
+                            } else {
+                                "Free Tier quota for $currentId is exhausted or disabled. Try $altId or add your Paid Gemini API key in Settings."
+                            }
                             Text(
-                                text = "Free Tier quota for ${uiState.settings.effectiveModelId} is exhausted or disabled. Add your own Paid Gemini API key in Settings to bypass this limit, or switch to gemini-3.8-flash.",
+                                text = quotaHint,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -509,17 +516,19 @@ fun ScanScreen(
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = "Add Paid API Key",
-                                        style = MaterialTheme.typography.labelMedium
+                                        text = if (uiState.settings.isUsingPaidKey) "API Key & Models" else "Add Paid API Key",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
                                 }
 
-                                if (uiState.settings.selectedModel != AiModelOption.FAST_FLASH) {
+                                if (!altId.equals(currentId, ignoreCase = true)) {
                                     OutlinedButton(
-                                        onClick = onSwitchToFlashAndRetry,
+                                        onClick = onSwitchToAlternateAndRetry,
                                         modifier = Modifier
                                             .height(42.dp)
-                                            .testTag("error_switch_flash_button"),
+                                            .testTag("error_switch_alternate_button"),
                                         shape = MaterialTheme.shapes.small,
                                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
                                         colors = ButtonDefaults.outlinedButtonColors(
@@ -535,8 +544,10 @@ fun ScanScreen(
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
-                                            text = "Use Flash & Retry",
-                                            style = MaterialTheme.typography.labelMedium
+                                            text = "Try $altId",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            softWrap = false
                                         )
                                     }
                                 }

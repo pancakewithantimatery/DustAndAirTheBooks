@@ -16,26 +16,26 @@ enum class AiModelOption(
         requiresPaidTier = false,
         description = "Fast ISBN extraction, Vision OCR, and Google Search bibliographic grounding."
     ),
-    DEEP_ARGON(
-        modelId = "gemini-4-argon",
-        label = "gemini-4-argon",
-        badge = "Paid / Blaze",
-        requiresPaidTier = true,
-        description = "Deep bibliographic research, obscure 1990s/2000s editions & rich lore analysis. Requires Paid API key or Blaze plan."
-    ),
     LITE_BATCH(
         modelId = "gemini-3.5-flash-lite",
         label = "gemini-3.5-flash-lite",
-        badge = "Ultra-Fast",
+        badge = "Lite",
         requiresPaidTier = false,
-        description = "High-speed lightweight cataloging for rapid shelf scanning sessions."
+        description = "Ultra-fast lightweight cataloging for rapid shelf scanning sessions."
+    ),
+    DEEP_ARGON(
+        modelId = "gemini-4-argon",
+        label = "gemini-4-argon",
+        badge = "Paid",
+        requiresPaidTier = true,
+        description = "Deep bibliographic research, obscure 1990s/2000s editions & rich lore analysis."
     ),
     CUSTOM(
         modelId = "custom",
         label = "Custom Model ID",
         badge = "BYOK",
         requiresPaidTier = true,
-        description = "Use any specific Gemini model ID from Google AI Studio with your paid API key."
+        description = "Use any verified Gemini model ID available to your Google AI Studio API key."
     );
 
     fun resolveModelId(customModelId: String): String {
@@ -50,8 +50,18 @@ enum class AiModelOption(
         fun fromModelId(id: String?): AiModelOption {
             return entries.firstOrNull { it.modelId == id } ?: FAST_FLASH
         }
+
+        fun presetMatchingId(modelId: String): AiModelOption? {
+            return entries.firstOrNull { it != CUSTOM && it.modelId.equals(modelId, ignoreCase = true) }
+        }
     }
 }
+
+data class DiscoveredGeminiModel(
+    val id: String,
+    val displayName: String,
+    val description: String
+)
 
 data class GroundingSource(
     val title: String,
